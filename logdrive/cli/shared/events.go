@@ -30,6 +30,7 @@ func (s Severity) String() string {
 
 type RuntimeEvent struct {
 	Timestamp time.Time         `json:"timestamp"`
+	Sequence  uint64            `json:"seq"`
 	Raw       string            `json:"raw"`
 	Message   string            `json:"message"`
 	Severity  Severity          `json:"severity"`
