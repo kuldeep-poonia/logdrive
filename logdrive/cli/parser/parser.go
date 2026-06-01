@@ -22,6 +22,7 @@ func ParseLine(raw string, last *shared.RuntimeEvent) *shared.RuntimeEvent {
 	cleanBuf.Reset()
 	defer lineBufPool.Put(cleanBuf)
 
+	// strip ANSI & control chars
 	clean := stripANSI([]byte(raw))
 	clean = bytes.TrimSpace(clean)
 	if len(clean) == 0 {
@@ -29,6 +30,7 @@ func ParseLine(raw string, last *shared.RuntimeEvent) *shared.RuntimeEvent {
 	}
 	cleanBuf.Write(clean)
 
+	// extract optional service prefix like "payment-service:"
 	service := ""
 	if m := reService.FindSubmatchIndex(cleanBuf.Bytes()); m != nil {
 		service = string(cleanBuf.Bytes()[m[2]:m[3]])
@@ -38,6 +40,7 @@ func ParseLine(raw string, last *shared.RuntimeEvent) *shared.RuntimeEvent {
 	}
 	cleanMsg := cleanBuf.Bytes()
 
+	// multiline trace aggregation
 	if last != nil && isContinuation(cleanMsg) {
 		last.Message = last.Message + "\n" + string(cleanMsg)
 		last.Raw = last.Raw + "\n" + raw

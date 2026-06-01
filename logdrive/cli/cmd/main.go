@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	// Prevent broken‑pipe crashes from Rust terminals/pagers.
+	// Avoid Rust terminal crashes when stdout is closed (e.g., piping to head).
 	signal.Ignore(syscall.SIGPIPE)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
