@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -31,10 +30,11 @@ func NewPTYSession(ctx context.Context, shell string) (*PTYSession, error) {
 		shell = "/bin/bash"
 	}
 
-	// Launch a shell that first runs `stty -echo` to disable local echo.
-	// This prevents the PTY from capturing the user's own command input.
-	cmd := exec.Command("/bin/sh", "-c",
-		fmt.Sprintf("stty -echo; exec %s", shell))
+	// Start a clean, prompt‑less interactive shell with echo disabled.
+	// The wrapper script sets PS1 to empty, suppresses bash startup files,
+	// turns off terminal echo, and finally execs the desired shell.
+	cmd := exec.Command("/bin/bash", "-c",
+		`export PS1=; stty -echo; exec bash --norc --noprofile`)
 	cmd.Env = os.Environ()
 
 	ptyFile, err := pty.Start(cmd)
@@ -42,7 +42,7 @@ func NewPTYSession(ctx context.Context, shell string) (*PTYSession, error) {
 		return nil, err
 	}
 
-	// Set initial terminal size.
+	// Set an initial sensible terminal size.
 	if err := pty.Setsize(ptyFile, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
 		ptyFile.Close()
 		return nil, err
@@ -73,7 +73,7 @@ func (s *PTYSession) readLines(ctx context.Context) {
 	for {
 		line, err := readLongLine(reader, &buf)
 		if line != "" {
-			// Trim trailing CR (carriage return) for cleaner output.
+			// Remove trailing carriage return for clean output.
 			line = strings.TrimSuffix(line, "\r")
 			if line != "" {
 				select {
