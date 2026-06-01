@@ -7,15 +7,12 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"logdrive/cli/ingest"
 	"logdrive/cli/parser"
 	"logdrive/cli/shared"
 	"logdrive/cli/stream"
 )
-
-const flushTimeout = 100 * time.Millisecond
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -44,52 +41,47 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for ev := range outSub.Ch {
-			if err := writeEvent(ev); err != nil {
-				return
-			}
+			writeEvent(ev)
+			os.Stdout.Sync()
 		}
 	}()
 
 	fmt.Fprintln(os.Stderr, "LogDrive PTY session started. Type commands (Ctrl+C to exit).")
 
-	var last *shared.RuntimeEvent
-	timer := time.NewTimer(flushTimeout)
-	timer.Stop()
+	var pending *shared.RuntimeEvent
 
-loop:
 	for {
 		select {
 		case line, ok := <-session.Lines():
 			if !ok {
-				break loop
+				// PTY closed – publish any pending event
+				if pending != nil {
+					publishEvent(ringBuf, bcast, pending)
+				}
+				goto shutdown
 			}
-			ev := parser.ParseLine(line, last)
+			ev := parser.ParseLine(line, pending)
 			if ev == nil {
-				timer.Reset(flushTimeout)
+				// line was a continuation → pending has been updated in place
 				continue
 			}
-			if last != nil && ev != last {
-				publishEvent(ringBuf, bcast, last)
+			// A new independent event started.
+			// If we were building a previous event, publish it now.
+			if pending != nil && ev != pending {
+				publishEvent(ringBuf, bcast, pending)
 			}
-			last = ev
-			timer.Reset(flushTimeout)
-
-		case <-timer.C:
-			if last != nil {
-				publishEvent(ringBuf, bcast, last)
-				last = nil
-			}
+			pending = ev
 
 		case <-ctx.Done():
-			break loop
+			// interrupted – publish pending event and exit
+			if pending != nil {
+				publishEvent(ringBuf, bcast, pending)
+			}
+			goto shutdown
 		}
 	}
 
-	timer.Stop()
-	if last != nil {
-		publishEvent(ringBuf, bcast, last)
-	}
-
+shutdown:
 	outSub.Unsubscribe()
 	bcast.Close()
 	wg.Wait()
@@ -100,11 +92,10 @@ func publishEvent(rb *stream.RingBuffer, bc *stream.Broadcaster, ev *shared.Runt
 	bc.Publish(ev)
 }
 
-func writeEvent(ev *shared.RuntimeEvent) error {
+func writeEvent(ev *shared.RuntimeEvent) {
 	if ev.Service != "" {
-		_, err := fmt.Printf("[%s] %s %s\n", ev.Severity, ev.Service, ev.Message)
-		return err
+		fmt.Printf("[%s] %s %s\n", ev.Severity, ev.Service, ev.Message)
+	} else {
+		fmt.Printf("[%s] %s\n", ev.Severity, ev.Message)
 	}
-	_, err := fmt.Printf("[%s] %s\n", ev.Severity, ev.Message)
-	return err
 }
