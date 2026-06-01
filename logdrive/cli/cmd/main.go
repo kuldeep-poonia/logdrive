@@ -1,19 +1,21 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
-	"logdrive/ingest"
-	"logdrive/parser"
-	"logdrive/shared"
+	"logdrive/cli/ingest"
+	"logdrive/cli/parser"
+	"logdrive/cli/shared"
 )
 
 func main() {
+	// Prevent broken‑pipe crashes from Rust terminals/pagers.
+	signal.Ignore(syscall.SIGPIPE)
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -29,16 +31,11 @@ func main() {
 	}
 	defer session.Close()
 
-	// Forward user input
 	ingest.ForwardStdin(ctx, session.Pty())
 
-	// Buffered stdout writer to avoid fmt.Printf in hot path
-	out := bufio.NewWriterSize(os.Stdout, 16*1024)
-	defer out.Flush()
-
-	var lastEvent *shared.RuntimeEvent
-
 	fmt.Fprintln(os.Stderr, "LogDrive PTY session started. Type commands (Ctrl+C to exit).")
+
+	var last *shared.RuntimeEvent
 
 	for {
 		select {
@@ -46,41 +43,33 @@ func main() {
 			if !ok {
 				return
 			}
-			event := parser.ParseLine(line, lastEvent)
-			if event == nil {
-				// multiline continuation updated lastEvent
-				continue
+			ev := parser.ParseLine(line, last)
+			if ev == nil {
+				continue // multiline continuation updated `last`
 			}
-			// If the event is not a continuation, finalize last and start new.
-			if lastEvent != nil && event != lastEvent {
-				writeEvent(out, lastEvent)
+			if last != nil && ev != last {
+				writeEvent(last)
 			}
-			lastEvent = event
+			last = ev
 		case <-ctx.Done():
-			// flush the last event before exit
-			if lastEvent != nil {
-				writeEvent(out, lastEvent)
-				out.Flush()
+			if last != nil {
+				writeEvent(last)
 			}
 			return
 		}
 	}
 }
 
-// writeEvent builds the output line without allocations by reusing a buffer.
-var writeBuf = make([]byte, 0, 256)
-
-func writeEvent(w *bufio.Writer, ev *shared.RuntimeEvent) {
-	writeBuf = writeBuf[:0]
-	writeBuf = append(writeBuf, '[')
-	writeBuf = append(writeBuf, ev.Severity.String()...)
-	writeBuf = append(writeBuf, ']')
+func writeEvent(ev *shared.RuntimeEvent) {
 	if ev.Service != "" {
-		writeBuf = append(writeBuf, ' ')
-		writeBuf = append(writeBuf, ev.Service...)
+		_, err := fmt.Printf("[%s] %s %s\n", ev.Severity, ev.Service, ev.Message)
+		if err != nil {
+			os.Exit(0) // stdout closed, exit quietly
+		}
+	} else {
+		_, err := fmt.Printf("[%s] %s\n", ev.Severity, ev.Message)
+		if err != nil {
+			os.Exit(0)
+		}
 	}
-	writeBuf = append(writeBuf, ' ')
-	writeBuf = append(writeBuf, ev.Message...)
-	writeBuf = append(writeBuf, '\n')
-	w.Write(writeBuf)
 }

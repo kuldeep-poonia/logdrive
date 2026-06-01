@@ -3,7 +3,6 @@ package shared
 
 import "time"
 
-// Severity – UNKNOWN is the zero value for safe comparisons.
 type Severity int
 
 const (
@@ -29,7 +28,6 @@ func (s Severity) String() string {
 	}
 }
 
-// RuntimeEvent – Metadata remains nil until needed.
 type RuntimeEvent struct {
 	Timestamp time.Time         `json:"timestamp"`
 	Raw       string            `json:"raw"`
