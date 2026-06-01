@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/signal"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -16,9 +15,7 @@ import (
 	"logdrive/cli/stream"
 )
 
-var seqCounter uint64
-
-const flushTimeout = 100 * time.Millisecond // max wait before publishing last event
+const flushTimeout = 100 * time.Millisecond
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -57,7 +54,7 @@ func main() {
 
 	var last *shared.RuntimeEvent
 	timer := time.NewTimer(flushTimeout)
-	timer.Stop() // not running yet
+	timer.Stop()
 
 loop:
 	for {
@@ -68,21 +65,16 @@ loop:
 			}
 			ev := parser.ParseLine(line, last)
 			if ev == nil {
-				// Continuation line appended to last.
-				// Reset the flush timer so we don't cut off a trace prematurely.
 				timer.Reset(flushTimeout)
 				continue
 			}
-			// A new independent event has started → finalize the previous one.
 			if last != nil && ev != last {
 				publishEvent(ringBuf, bcast, last)
 			}
 			last = ev
-			// Start / reset the flush timer.
 			timer.Reset(flushTimeout)
 
 		case <-timer.C:
-			// No new line for flushTimeout → publish any pending event.
 			if last != nil {
 				publishEvent(ringBuf, bcast, last)
 				last = nil
@@ -104,7 +96,6 @@ loop:
 }
 
 func publishEvent(rb *stream.RingBuffer, bc *stream.Broadcaster, ev *shared.RuntimeEvent) {
-	ev.Sequence = atomic.AddUint64(&seqCounter, 1) - 1
 	rb.Push(ev)
 	bc.Publish(ev)
 }

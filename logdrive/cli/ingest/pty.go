@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -30,21 +31,17 @@ func NewPTYSession(ctx context.Context, shell string) (*PTYSession, error) {
 		shell = "/bin/bash"
 	}
 
-	// Start a clean, prompt‑less interactive shell with echo disabled.
-	// The wrapper script sets PS1 to empty, suppresses bash startup files,
-	// turns off terminal echo, and finally execs the desired shell.
-	cmd := exec.Command("/bin/bash", "-c",
-		`export PS1=; stty -echo; exec bash --norc --noprofile`)
+	// Launch a wrapper shell that disables echo, then execs the real shell
+	// with no prompt and no startup scripts.
+	wrapperCmd := fmt.Sprintf(
+		"stty -echo; export PS1=; exec %s --norc --noprofile",
+		shell,
+	)
+	cmd := exec.Command("/bin/sh", "-c", wrapperCmd)
 	cmd.Env = os.Environ()
 
-	ptyFile, err := pty.Start(cmd)
+	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
-		return nil, err
-	}
-
-	// Set an initial sensible terminal size.
-	if err := pty.Setsize(ptyFile, &pty.Winsize{Rows: 24, Cols: 80}); err != nil {
-		ptyFile.Close()
 		return nil, err
 	}
 
@@ -70,12 +67,21 @@ func (s *PTYSession) readLines(ctx context.Context) {
 	reader := bufio.NewReaderSize(s.ptyFile, 64*1024)
 	var buf bytes.Buffer
 
+	// Drain any initial noise (e.g., the "stty -echo" command itself might be
+	// echoed before echo is off). Discard lines until we have a brief idle period.
+	discardTimer := time.NewTimer(50 * time.Millisecond)
+	discarding := true
+
 	for {
 		line, err := readLongLine(reader, &buf)
 		if line != "" {
-			// Remove trailing carriage return for clean output.
 			line = strings.TrimSuffix(line, "\r")
 			if line != "" {
+				if discarding {
+					// Reset the timer – we saw a line, keep discarding.
+					discardTimer.Reset(50 * time.Millisecond)
+					continue
+				}
 				select {
 				case s.lines <- line:
 				case <-ctx.Done():
@@ -85,6 +91,12 @@ func (s *PTYSession) readLines(ctx context.Context) {
 		}
 		if err != nil {
 			return
+		}
+		select {
+		case <-discardTimer.C:
+			discarding = false
+			discardTimer.Stop()
+		default:
 		}
 	}
 }
