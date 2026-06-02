@@ -1,71 +1,62 @@
 import { RuntimeEvent } from '@/types/runtime';
-
-type EventCallback = (event: RuntimeEvent) => void;
-type ReplayCallback = (events: RuntimeEvent[]) => void;
+import { useRuntimeStore } from '@/store/runtimeStore';
 
 export class RealtimeWebSocket {
   private ws: WebSocket | null = null;
   private url: string;
-  private onEvent: EventCallback;
-  private onReplay: ReplayCallback;
-  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-  private onStatusChange: (connected: boolean) => void;
+  private queue: RuntimeEvent[] = [];
+  private onFlush: (events: RuntimeEvent[]) => void;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private store = useRuntimeStore;
 
-  constructor(
-    url: string,
-    onEvent: EventCallback,
-    onReplay: ReplayCallback,
-    onStatusChange: (connected: boolean) => void
-  ) {
+  constructor(url: string, onFlush: (events: RuntimeEvent[]) => void) {
     this.url = url;
-    this.onEvent = onEvent;
-    this.onReplay = onReplay;
-    this.onStatusChange = onStatusChange;
+    this.onFlush = onFlush;
     this.connect();
   }
 
   private connect() {
+    if (this.ws) this.ws.close();
     this.ws = new WebSocket(this.url);
     this.ws.onopen = () => {
-      this.onStatusChange(true);
+      this.store.getState().setConnected(true);
+      // Send any queued replay events as initial snapshot? Not needed, server sends replay automatically.
     };
     this.ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
-        // The server sends a snapshot as an array? Actually it sends individual JSON lines.
-        // The hub sends a snapshot as a sequence of JSON objects, not an array.
-        // We'll treat each line as an event.
-        // If it's an array, we handle it as replay.
+        // The server sends individual JSON lines. It may also send an array for replay (but we treat each line separately)
         if (Array.isArray(data)) {
-          // this is unlikely but handle as replay snapshot
-          this.onReplay(data);
-        } else if (data && typeof data === 'object') {
-          this.onEvent(data as RuntimeEvent);
+          this.queue.push(...data);
+        } else {
+          this.queue.push(data as RuntimeEvent);
         }
-      } catch (err) {
-        console.error('WebSocket parse error', err);
-      }
+        // Flush immediately (non-blocking via requestAnimationFrame)
+        if (this.queue.length > 0) {
+          this.flush();
+        }
+      } catch {}
     };
-    this.ws.onerror = (err) => {
-      console.error('WebSocket error', err);
-    };
+    this.ws.onerror = () => {};
     this.ws.onclose = () => {
-      this.onStatusChange(false);
+      this.store.getState().setConnected(false);
       this.scheduleReconnect();
     };
   }
 
+  private flush() {
+    const events = this.queue;
+    this.queue = [];
+    this.onFlush(events);
+  }
+
   private scheduleReconnect() {
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
-    this.reconnectTimeout = setTimeout(() => {
-      this.connect();
-    }, 3000);
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => this.connect(), 3000);
   }
 
   public close() {
-    if (this.ws) {
-      this.ws.close();
-    }
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    if (this.ws) this.ws.close();
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
   }
 }

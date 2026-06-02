@@ -8,6 +8,8 @@ export function createPixiApp(canvas: HTMLCanvasElement): Application {
     antialias: true,
     resolution: window.devicePixelRatio || 1,
     autoDensity: true,
+    eventMode: 'none', // we don't need interaction
+    eventFeatures: { move: false, click: false, wheel: false },
   });
   return app;
 }

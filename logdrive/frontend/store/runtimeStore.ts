@@ -1,32 +1,27 @@
 import { create } from 'zustand';
-import { RuntimeEvent, ReplayState } from '@/types/runtime';
+import { RuntimeEvent } from '@/types/runtime';
 
 interface RuntimeStore {
-  // live connection status
   connected: boolean;
   setConnected: (v: boolean) => void;
-
-  // event throughput (last second)
   eventsPerSecond: number;
   setEventsPerSecond: (v: number) => void;
-
-  // active vehicle count
   activeVehicles: number;
   setActiveVehicles: (v: number) => void;
-
-  // replay state
-  replay: ReplayState;
+  fps: number;
+  setFps: (v: number) => void;
+  replay: {
+    enabled: boolean;
+    events: RuntimeEvent[];
+    currentIndex: number;
+    isPlaying: boolean;
+  };
   toggleReplay: () => void;
   setReplayEvents: (events: RuntimeEvent[]) => void;
   replayNextEvent: () => void;
   pauseReplay: () => void;
   resumeReplay: () => void;
   setReplayIndex: (index: number) => void;
-
-  // dropped frame warning
-  droppedFrames: number;
-  incrementDroppedFrames: () => void;
-  resetDroppedFrames: () => void;
 }
 
 export const useRuntimeStore = create<RuntimeStore>((set) => ({
@@ -36,6 +31,8 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
   setEventsPerSecond: (v) => set({ eventsPerSecond: v }),
   activeVehicles: 0,
   setActiveVehicles: (v) => set({ activeVehicles: v }),
+  fps: 0,
+  setFps: (v) => set({ fps: v }),
   replay: {
     enabled: false,
     events: [],
@@ -43,42 +40,22 @@ export const useRuntimeStore = create<RuntimeStore>((set) => ({
     isPlaying: false,
   },
   toggleReplay: () =>
-    set((state) => ({
-      replay: {
-        ...state.replay,
-        enabled: !state.replay.enabled,
-        isPlaying: !state.replay.enabled,
-        currentIndex: 0,
-      },
+    set((s) => ({
+      replay: { ...s.replay, enabled: !s.replay.enabled, isPlaying: !s.replay.enabled, currentIndex: 0 },
     })),
   setReplayEvents: (events) =>
-    set((state) => ({
-      replay: { ...state.replay, events },
-    })),
+    set((s) => ({ replay: { ...s.replay, events } })),
   replayNextEvent: () =>
-    set((state) => ({
+    set((s) => ({
       replay: {
-        ...state.replay,
-        currentIndex: Math.min(
-          state.replay.currentIndex + 1,
-          state.replay.events.length - 1
-        ),
+        ...s.replay,
+        currentIndex: Math.min(s.replay.currentIndex + 1, s.replay.events.length - 1),
       },
     })),
   pauseReplay: () =>
-    set((state) => ({
-      replay: { ...state.replay, isPlaying: false },
-    })),
+    set((s) => ({ replay: { ...s.replay, isPlaying: false } })),
   resumeReplay: () =>
-    set((state) => ({
-      replay: { ...state.replay, isPlaying: true },
-    })),
+    set((s) => ({ replay: { ...s.replay, isPlaying: true } })),
   setReplayIndex: (index) =>
-    set((state) => ({
-      replay: { ...state.replay, currentIndex: index },
-    })),
-  droppedFrames: 0,
-  incrementDroppedFrames: () =>
-    set((state) => ({ droppedFrames: state.droppedFrames + 1 })),
-  resetDroppedFrames: () => set({ droppedFrames: 0 }),
+    set((s) => ({ replay: { ...s.replay, currentIndex: index } })),
 }));

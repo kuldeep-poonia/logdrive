@@ -1,60 +1,47 @@
 import { Container, Graphics } from 'pixi.js';
 import { Severity } from '@/types/runtime';
-
-const severityColors: Record<Severity, number> = {
-  INFO: 0x39ff14,
-  WARN: 0xffea00,
-  ERROR: 0xff3300,
-  FATAL: 0xff0040,
-  UNKNOWN: 0x888888,
-};
+import { vehiclePool, crashPool } from './pools';
+import { applyScreenShake } from './effects';
 
 export class VehicleFactory {
   private container: Container;
-  private vehicleGraphics: Map<number, Graphics> = new Map();
-  private crashGraphics: Map<number, { graphic: Graphics; startTime: number; duration: number }> = new Map();
+  private vehicles: Map<number, { graphic: Graphics; speed: number; severity: Severity; wobblePhase: number }> = new Map();
+  private crashes: Map<number, { graphic: Graphics; startTime: number; duration: number }> = new Map();
   private nextId = 1;
 
   constructor(container: Container) {
     this.container = container;
   }
 
-  spawnVehicle(severity: Severity, laneY: number): { id: number; x: number; y: number; speed: number; severity: Severity } {
-    const g = new Graphics();
-    const color = severityColors[severity];
-    switch (severity) {
-      case 'WARN':
-        g.beginFill(color);
-        g.drawPolygon([8, 0, 16, 16, 0, 16]);
-        g.endFill();
-        break;
-      case 'ERROR':
-        g.beginFill(color);
-        g.drawRect(0, 0, 16, 16);
-        g.endFill();
-        break;
-      case 'FATAL':
-        g.beginFill(color);
-        g.drawRect(0, 0, 16, 16);
-        g.endFill();
-        break;
-      default: // INFO
-        g.beginFill(color);
-        g.drawCircle(8, 8, 8);
-        g.endFill();
+  spawnVehicle(severity: Severity, laneY: number) {
+    const g = vehiclePool.get();
+    const color = severity === 'INFO' ? 0x39ff14 :
+                  severity === 'WARN' ? 0xffea00 :
+                  severity === 'ERROR' ? 0xff3300 : 0xff0040;
+    // Draw simple shape
+    if (severity === 'WARN') {
+      g.beginFill(color);
+      g.drawPolygon([8, 0, 16, 16, 0, 16]);
+      g.endFill();
+    } else if (severity === 'ERROR') {
+      g.beginFill(color);
+      g.drawRect(0, 0, 16, 16);
+      g.endFill();
+    } else { // INFO & FATAL as circle
+      g.beginFill(color);
+      g.drawCircle(8, 8, 8);
+      g.endFill();
     }
-    // Use pivot for centering (graphics drawn around 0,0)
-    g.pivot.set(8, 8); // center of a 16x16 area
-    const id = this.nextId++;
-    g.x = 800; // start from right edge
+    g.pivot.set(8, 8);
+    g.x = this.container.width + 30; // start offscreen right
     g.y = laneY;
     this.container.addChild(g);
-    this.vehicleGraphics.set(id, g);
-    return { id, x: g.x, y: g.y, speed: 2 + Math.random() * 2, severity };
+    const id = this.nextId++;
+    this.vehicles.set(id, { graphic: g, speed: 2 + Math.random() * 2, severity, wobblePhase: Math.random() * Math.PI * 2 });
   }
 
-  spawnCrash(x: number, y: number): void {
-    const g = new Graphics();
+  spawnCrash(x: number, y: number) {
+    const g = crashPool.get();
     g.beginFill(0xff0000, 0.5);
     g.drawCircle(0, 0, 10);
     g.lineStyle(2, 0xff0000, 0.7);
@@ -68,30 +55,39 @@ export class VehicleFactory {
     g.y = y;
     this.container.addChild(g);
     const id = this.nextId++;
-    this.crashGraphics.set(id, { graphic: g, startTime: performance.now(), duration: 1000 });
+    this.crashes.set(id, { graphic: g, startTime: performance.now(), duration: 800 });
+    applyScreenShake(this.container, 4, 300);
   }
 
   update(delta: number, now: number) {
-    for (const [id, g] of this.vehicleGraphics) {
-      g.x -= 2 * delta;
-      if (g.x < -30) {
-        this.container.removeChild(g);
-        this.vehicleGraphics.delete(id);
+    // Update vehicles
+    for (const [id, v] of this.vehicles) {
+      v.graphic.x -= v.speed * delta;
+      // Wobble for WARN
+      if (v.severity === 'WARN') {
+        v.wobblePhase += 0.1 * delta;
+        v.graphic.y += Math.sin(v.wobblePhase) * 0.5;
+      }
+      if (v.graphic.x < -30) {
+        this.container.removeChild(v.graphic);
+        vehiclePool.release(v.graphic);
+        this.vehicles.delete(id);
       }
     }
-    for (const [id, { graphic, startTime, duration }] of this.crashGraphics) {
-      const age = now - startTime;
-      if (age > duration) {
-        this.container.removeChild(graphic);
-        this.crashGraphics.delete(id);
+    // Update crashes
+    for (const [id, c] of this.crashes) {
+      const age = now - c.startTime;
+      if (age > c.duration) {
+        this.container.removeChild(c.graphic);
+        crashPool.release(c.graphic);
+        this.crashes.delete(id);
       } else {
-        graphic.alpha = 1 - age / duration;
-        graphic.scale.set(1 + (age / duration) * 1.5);
+        const progress = age / c.duration;
+        c.graphic.alpha = 1 - progress;
+        c.graphic.scale.set(1 + progress * 2);
       }
     }
   }
 
-  get activeVehicleCount(): number {
-    return this.vehicleGraphics.size;
-  }
+  get activeVehicleCount() { return this.vehicles.size; }
 }
