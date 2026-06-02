@@ -24,14 +24,17 @@ type PTYSession struct {
 
 func (s *PTYSession) Lines() <-chan string { return s.lines }
 func (s *PTYSession) Pty() *os.File        { return s.ptyFile }
+func (s *PTYSession) Cmd() *exec.Cmd       { return s.cmd }
 
 func NewPTYSession(ctx context.Context, shell string) (*PTYSession, error) {
 	if shell == "" {
 		shell = "/bin/bash"
 	}
 
-	cmd := exec.Command(shell)
-	cmd.Env = os.Environ()
+	// Wrapper: disable echo (suppress any output), clear prompt, exec shell.
+	wrapperCmd := "stty -echo >/dev/null 2>&1; exec " + shell + " --norc --noprofile"
+	cmd := exec.Command("/bin/sh", "-c", wrapperCmd)
+	cmd.Env = append(os.Environ(), "PS1=") // no prompt
 
 	ptyFile, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 24, Cols: 80})
 	if err != nil {
@@ -56,6 +59,11 @@ func NewPTYSession(ctx context.Context, shell string) (*PTYSession, error) {
 func (s *PTYSession) readLines(ctx context.Context) {
 	defer close(s.done)
 	defer s.ptyFile.Close()
+
+	go func() {
+		<-ctx.Done()
+		s.ptyFile.Close()
+	}()
 
 	reader := bufio.NewReaderSize(s.ptyFile, 64*1024)
 	var buf bytes.Buffer

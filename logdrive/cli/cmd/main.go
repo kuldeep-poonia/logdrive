@@ -7,30 +7,31 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
-	"logdrive/cli/ingest"
 	"logdrive/cli/parser"
 	"logdrive/cli/shared"
 	"logdrive/cli/stream"
+	"golang.org/x/term"
 )
 
+const flushTimeout = 150 * time.Millisecond
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/bash"
-	}
-
-	session, err := ingest.NewPTYSession(ctx, shell)
+	// Put the terminal in raw mode: no echo, no line buffering, Ctrl‑C handled by us.
+	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start PTY: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to set raw terminal: %v\n", err)
 		os.Exit(1)
 	}
-	defer session.Close()
+	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	ingest.ForwardStdin(ctx, session.Pty())
+	// Ctrl‑C will be caught as a byte, not a signal. However, SIGINT can still
+	// be delivered in some scenarios; we ignore it for safety.
+	signal.Ignore(syscall.SIGINT)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+	defer stop()
 
 	ringBuf := stream.NewRingBuffer(1000)
 	bcast := stream.NewBroadcaster()
@@ -46,34 +47,78 @@ func main() {
 		}
 	}()
 
-	fmt.Fprintln(os.Stderr, "LogDrive PTY session started. Type commands (Ctrl+C to exit).")
+	fmt.Fprintf(os.Stderr, "LogDrive memory engine active. Type log lines (Ctrl+C to quit).\r\n")
+	fmt.Fprintf(os.Stderr, "Example: ERROR grpc timeout\r\n")
+
+	// Read stdin byte by byte in raw mode.
+	input := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 1)
+		var line []byte
+		for {
+			_, err := os.Stdin.Read(buf)
+			if err != nil {
+				close(input)
+				return
+			}
+			b := buf[0]
+			switch b {
+			case 0x03: // Ctrl‑C → shut down
+				stop()
+				close(input)
+				return
+			case '\r', '\n': // Enter → send line
+				if len(line) > 0 {
+					input <- string(line)
+					line = line[:0]
+				}
+			case 0x7f: // Backspace
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+					// Erase the last character from the terminal.
+					fmt.Print("\b \b")
+				}
+			default:
+				// Printable character – add to line, but do NOT echo.
+				if b >= 32 {
+					line = append(line, b)
+				}
+			}
+		}
+	}()
 
 	var pending *shared.RuntimeEvent
+	flushTimer := time.NewTimer(flushTimeout)
+	flushTimer.Stop()
 
 	for {
 		select {
-		case line, ok := <-session.Lines():
+		case line, ok := <-input:
 			if !ok {
-				// PTY closed – publish any pending event
 				if pending != nil {
 					publishEvent(ringBuf, bcast, pending)
 				}
 				goto shutdown
 			}
+
 			ev := parser.ParseLine(line, pending)
 			if ev == nil {
-				// line was a continuation → pending has been updated in place
+				flushTimer.Reset(flushTimeout)
 				continue
 			}
-			// A new independent event started.
-			// If we were building a previous event, publish it now.
 			if pending != nil && ev != pending {
 				publishEvent(ringBuf, bcast, pending)
 			}
 			pending = ev
+			flushTimer.Reset(flushTimeout)
+
+		case <-flushTimer.C:
+			if pending != nil {
+				publishEvent(ringBuf, bcast, pending)
+				pending = nil
+			}
 
 		case <-ctx.Done():
-			// interrupted – publish pending event and exit
 			if pending != nil {
 				publishEvent(ringBuf, bcast, pending)
 			}
@@ -82,6 +127,7 @@ func main() {
 	}
 
 shutdown:
+	flushTimer.Stop()
 	outSub.Unsubscribe()
 	bcast.Close()
 	wg.Wait()
@@ -94,8 +140,8 @@ func publishEvent(rb *stream.RingBuffer, bc *stream.Broadcaster, ev *shared.Runt
 
 func writeEvent(ev *shared.RuntimeEvent) {
 	if ev.Service != "" {
-		fmt.Printf("[%s] %s %s\n", ev.Severity, ev.Service, ev.Message)
+		fmt.Printf("[%s] %s %s\r\n", ev.Severity, ev.Service, ev.Message)
 	} else {
-		fmt.Printf("[%s] %s\n", ev.Severity, ev.Message)
+		fmt.Printf("[%s] %s\r\n", ev.Severity, ev.Message)
 	}
 }
