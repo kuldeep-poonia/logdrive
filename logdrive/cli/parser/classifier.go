@@ -39,11 +39,13 @@ func buildTrie() *trieNode {
 	return root
 }
 
+// classifyBytes returns the highest‑severity match found in the line.
+// Within the same severity, longer matches are preferred.
 func classifyBytes(line []byte) (shared.Severity, string) {
 	trieOnce.Do(func() { trieRoot = buildTrie() })
 
+	var bestSev shared.Severity = shared.UNKNOWN
 	bestLen := 0
-	var bestSev shared.Severity
 	var bestTyp string
 
 	for start := 0; start < len(line); {
@@ -62,9 +64,10 @@ func classifyBytes(line []byte) (shared.Severity, string) {
 			end++
 			if n.isEnd {
 				length := end - start
-				if length > bestLen {
-					bestLen = length
+				// Prefer higher severity; if equal, longer match wins.
+				if n.sev > bestSev || (n.sev == bestSev && length > bestLen) {
 					bestSev = n.sev
+					bestLen = length
 					bestTyp = n.eventType
 				}
 			}
@@ -73,7 +76,7 @@ func classifyBytes(line []byte) (shared.Severity, string) {
 		start += size
 	}
 
-	if bestLen > 0 {
+	if bestSev > shared.UNKNOWN {
 		return bestSev, bestTyp
 	}
 	return shared.INFO, ""

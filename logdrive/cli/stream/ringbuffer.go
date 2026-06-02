@@ -25,16 +25,27 @@ func NewRingBuffer(capacity int) *RingBuffer {
 	}
 }
 
+// Push stores a deep copy of the event so that subsequent modifications by the
+// parser (e.g. multiline aggregation) do not corrupt history.
 func (rb *RingBuffer) Push(ev *shared.RuntimeEvent) {
 	rb.mu.Lock()
 	defer rb.mu.Unlock()
 
-	// Explicitly nil the overwritten slot to help GC.
+	// Deep‑copy the event.
+	clone := *ev
+	if ev.Metadata != nil {
+		clone.Metadata = make(map[string]string, len(ev.Metadata))
+		for k, v := range ev.Metadata {
+			clone.Metadata[k] = v
+		}
+	}
+
+	// Overwrite oldest if full.
 	if rb.full {
 		rb.buf[rb.head] = nil
 	}
 
-	rb.buf[rb.tail] = ev
+	rb.buf[rb.tail] = &clone
 	rb.tail = (rb.tail + 1) % rb.size
 
 	if rb.full {
@@ -77,7 +88,13 @@ func (rb *RingBuffer) Snapshot() []*shared.RuntimeEvent {
 		idx := (rb.head + i) % rb.size
 		orig := rb.buf[idx]
 		if orig != nil {
-			clone := *orig // value copy (Metadata is nil, safe)
+			clone := *orig
+			if orig.Metadata != nil {
+				clone.Metadata = make(map[string]string, len(orig.Metadata))
+				for k, v := range orig.Metadata {
+					clone.Metadata[k] = v
+				}
+			}
 			snap[i] = &clone
 		}
 	}
