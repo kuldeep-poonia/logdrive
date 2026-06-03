@@ -6,4 +6,6 @@ export interface RuntimeEvent {
   message: string;
   service?: string;
   event_type?: string;
+  // Sequence number assigned by stream
+  seq?: number;
 }
